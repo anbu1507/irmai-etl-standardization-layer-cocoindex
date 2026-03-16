@@ -1,0 +1,60 @@
+stages:
+  - plan
+  - deploy
+
+terraform_plan:
+  stage: plan
+  image: 
+    name: hashicorp/terraform:latest
+    entrypoint: [""]
+  script:
+    - cd terraform
+    - terraform init
+    - terraform plan
+  only:
+    - main
+
+terraform_deploy:
+  stage: deploy
+  image: 
+    name: hashicorp/terraform:latest
+    entrypoint: [""]
+  script:
+    - cd terraform
+    - terraform init
+    - terraform apply -auto-approve
+  only:
+    - main
+
+function_deploy:
+  stage: deploy
+  image: mcr.microsoft.com/azure-functions/python:4-python3.9
+  dependencies:
+    - terraform_deploy
+  script:
+    - cd src
+    - apt-get update && apt-get install -y curl
+    - curl -sL https://aka.ms/InstallAzureCLIDeb | bash
+    - curl -sL https://deb.nodesource.com/setup_18.x | bash -
+    - apt-get install -y nodejs
+    - npm install -g azure-functions-core-tools@4 --unsafe-perm true
+    - az login --service-principal -u $ARM_CLIENT_ID -p $ARM_CLIENT_SECRET --tenant $ARM_TENANT_ID
+    # CRITICAL FIX: Added --build local to bypass the August 2019 error
+    - func azure functionapp publish irmai-standardization-engine-v1 --python --build local
+  only:
+    - main
+  dependencies:
+    - terraform_deploy
+  script:
+    - cd src
+    # Install Azure CLI, Node.js, and Core Tools
+    - apt-get update && apt-get install -y curl
+    - curl -sL https://aka.ms/InstallAzureCLIDeb | bash
+    - curl -sL https://deb.nodesource.com/setup_18.x | bash -
+    - apt-get install -y nodejs
+    - npm install -g azure-functions-core-tools@4 --unsafe-perm true
+    # Login and Publish
+    - az login --service-principal -u $ARM_CLIENT_ID -p $ARM_CLIENT_SECRET --tenant $ARM_TENANT_ID
+    - func azure functionapp publish irmai-standardization-engine-v1 --python
+  only:
+    - main
