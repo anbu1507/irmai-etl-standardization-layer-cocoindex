@@ -1,5 +1,4 @@
 azure-functions
 pandas
 numpy
-azure-identity
 azure-storage-blob
