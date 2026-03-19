@@ -1,0 +1,9 @@
+venv/
+__pycache__/
+*.pyc
+.python-version
+local.settings.json
+.env
+*.tfstate
+*.tfstate.backup
+.terraform/
