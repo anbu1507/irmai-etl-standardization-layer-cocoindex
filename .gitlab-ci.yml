@@ -15,21 +15,31 @@ debug_vars:
 
 terraform_plan:
   stage: plan
-  image:
-    name: hashicorp/terraform:1.9
-    entrypoint: [""]
+  image: ubuntu:22.04
+  before_script:
+    - apt-get update && apt-get install -y curl gnupg unzip
+    - curl -sL https://aka.ms/InstallAzureCLIDeb | bash
+    - curl -fsSL https://releases.hashicorp.com/terraform/1.9.0/terraform_1.9.0_linux_amd64.zip -o terraform.zip
+    - unzip terraform.zip && mv terraform /usr/local/bin/
+    - az login --service-principal -u $ARM_CLIENT_ID -p $ARM_CLIENT_SECRET --tenant $ARM_TENANT_ID
+    - az account set --subscription $ARM_SUBSCRIPTION_ID
   script:
     - cd irmai-etl-standardization-layer/terraform
     - terraform init
-    - terraform plan
+    - terraform plan -lock=false
   rules:
     - when: always
 
 terraform_deploy:
   stage: deploy
-  image:
-    name: hashicorp/terraform:1.9
-    entrypoint: [""]
+  image: ubuntu:22.04
+  before_script:
+    - apt-get update && apt-get install -y curl gnupg unzip
+    - curl -sL https://aka.ms/InstallAzureCLIDeb | bash
+    - curl -fsSL https://releases.hashicorp.com/terraform/1.9.0/terraform_1.9.0_linux_amd64.zip -o terraform.zip
+    - unzip terraform.zip && mv terraform /usr/local/bin/
+    - az login --service-principal -u $ARM_CLIENT_ID -p $ARM_CLIENT_SECRET --tenant $ARM_TENANT_ID
+    - az account set --subscription $ARM_SUBSCRIPTION_ID
   script:
     - cd irmai-etl-standardization-layer/terraform
     - terraform init
