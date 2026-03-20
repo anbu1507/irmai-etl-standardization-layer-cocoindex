@@ -1,58 +1,68 @@
+stages:
+  - plan
+  - deploy
 
-  stages:
-    - plan
-    - deploy
+debug_vars:
+  stage: plan
+  image: alpine
+  script:
+    - echo "CLIENT_ID is set = ${ARM_CLIENT_ID:+yes}"
+    - echo "TENANT_ID is set = ${ARM_TENANT_ID:+yes}"
+    - echo "SUBSCRIPTION_ID is set = ${ARM_SUBSCRIPTION_ID:+yes}"
+    - echo "CLIENT_SECRET is set = ${ARM_CLIENT_SECRET:+yes}"
+  rules:
+    - when: always
 
-  terraform_plan:
-    stage: plan
-    image:
-      name: hashicorp/terraform:1.9
-      entrypoint: [""]
-    script:
-      - cd irmai-etl-standardization-layer/terraform
-      - terraform init
-      - terraform plan
-    rules:
-      - when: always
+terraform_plan:
+  stage: plan
+  image:
+    name: hashicorp/terraform:1.9
+    entrypoint: [""]
+  script:
+    - cd irmai-etl-standardization-layer/terraform
+    - terraform init
+    - terraform plan
+  rules:
+    - when: always
 
-  terraform_deploy:
-    stage: deploy
-    image:
-      name: hashicorp/terraform:1.9
-      entrypoint: [""]
-    script:
-      - cd irmai-etl-standardization-layer/terraform
-      - terraform init
-      - terraform apply -auto-approve
-    rules:
-      - when: always
+terraform_deploy:
+  stage: deploy
+  image:
+    name: hashicorp/terraform:1.9
+    entrypoint: [""]
+  script:
+    - cd irmai-etl-standardization-layer/terraform
+    - terraform init
+    - terraform apply -auto-approve
+  rules:
+    - when: always
 
-  function_deploy:
-    stage: deploy
-    image: ubuntu:22.04
-    dependencies:
-      - terraform_deploy
-    before_script:
-      - apt-get update && apt-get install -y curl gnupg lsb-release libicu70 python3-pip
-      - curl -sL https://aka.ms/InstallAzureCLIDeb | bash
-      - curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-      - apt-get install -y nodejs
-      - npm install -g azure-functions-core-tools@4 --unsafe-perm true
-      - apt-get install -y python3.11 python3.11-venv || true
-      - az login --service-principal -u $ARM_CLIENT_ID -p $ARM_CLIENT_SECRET --tenant $ARM_TENANT_ID
-      - az account set --subscription $ARM_SUBSCRIPTION_ID
-    script:
-      - cd irmai-etl-standardization-layer/src
-      - |
-        OUTPUT=$(func azure functionapp publish irmai-standardization-engine-v1 --python --build remote 2>&1) || {
-          if echo "$OUTPUT" | grep -q "sync triggers"; then
-            echo "WARNING: Trigger sync failed. Restarting app..."
-            az functionapp restart --name irmai-standardization-engine-v1 --resource-group rg-irmai-uat-us-1
-          else
-            echo "$OUTPUT"
-            exit 1
-          fi
-        }
-        echo "$OUTPUT"
-    rules:
-      - when: always
+function_deploy:
+  stage: deploy
+  image: ubuntu:22.04
+  dependencies:
+    - terraform_deploy
+  before_script:
+    - apt-get update && apt-get install -y curl gnupg lsb-release libicu70 python3-pip
+    - curl -sL https://aka.ms/InstallAzureCLIDeb | bash
+    - curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+    - apt-get install -y nodejs
+    - npm install -g azure-functions-core-tools@4 --unsafe-perm true
+    - apt-get install -y python3.11 python3.11-venv || true
+    - az login --service-principal -u $ARM_CLIENT_ID -p $ARM_CLIENT_SECRET --tenant $ARM_TENANT_ID
+    - az account set --subscription $ARM_SUBSCRIPTION_ID
+  script:
+    - cd irmai-etl-standardization-layer/src
+    - |
+      OUTPUT=$(func azure functionapp publish irmai-standardization-engine-v1 --python --build remote 2>&1) || {
+        if echo "$OUTPUT" | grep -q "sync triggers"; then
+          echo "WARNING: Trigger sync failed. Restarting app..."
+          az functionapp restart --name irmai-standardization-engine-v1 --resource-group rg-irmai-uat-us-1
+        else
+          echo "$OUTPUT"
+          exit 1
+        fi
+      }
+      echo "$OUTPUT"
+  rules:
+    - when: always
