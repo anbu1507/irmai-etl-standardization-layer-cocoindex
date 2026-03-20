@@ -2,17 +2,6 @@ stages:
   - plan
   - deploy
 
-debug_vars:
-  stage: plan
-  image: alpine
-  script:
-    - echo "CLIENT_ID is set = ${ARM_CLIENT_ID:+yes}"
-    - echo "TENANT_ID is set = ${ARM_TENANT_ID:+yes}"
-    - echo "SUBSCRIPTION_ID is set = ${ARM_SUBSCRIPTION_ID:+yes}"
-    - echo "CLIENT_SECRET is set = ${ARM_CLIENT_SECRET:+yes}"
-  rules:
-    - when: always
-
 terraform_plan:
   stage: plan
   image: ubuntu:22.04
