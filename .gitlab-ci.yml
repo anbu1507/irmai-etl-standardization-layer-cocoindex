@@ -8,7 +8,7 @@ terraform_plan:
     name: hashicorp/terraform:1.9
     entrypoint: [""]
   script:
-    - cd terraform
+    - cd irmai-etl-standardization-layer/terraform
     - terraform init
     - terraform plan
   only:
@@ -20,7 +20,7 @@ terraform_deploy:
     name: hashicorp/terraform:1.9
     entrypoint: [""]
   script:
-    - cd terraform
+     cd irmai-etl-standardization-layer/terraform
     - terraform init
     - terraform apply -auto-approve
   only:
@@ -41,7 +41,7 @@ function_deploy:
     - az login --service-principal -u $ARM_CLIENT_ID -p $ARM_CLIENT_SECRET --tenant $ARM_TENANT_ID
     - az account set --subscription $ARM_SUBSCRIPTION_ID
   script:
-    - cd src
+      - cd irmai-etl-standardization-layer/src
     - |
       OUTPUT=$(func azure functionapp publish irmai-standardization-engine-v1 --python --build remote 2>&1) || {
         if echo "$OUTPUT" | grep -q "sync triggers"; then
