@@ -13,7 +13,7 @@ from openai import AzureOpenAI
 app = func.FunctionApp()
 
 # ---------------------------------------------------------------------------
-# Domain mapping: raw-zone first subfolder → parent label in staging-zone-test
+# Domain mapping: raw-zone first subfolder → parent label in staging-zone
 # ---------------------------------------------------------------------------
 DOMAIN_MAP = {
     'carinsurance': 'car-insurance',
@@ -408,7 +408,7 @@ def standardize_blob(myblob: func.InputStream):
         relative_parts = [DOMAIN_MAP[first_folder]] + relative_parts[1:]
     blob_path = '/'.join(relative_parts)
     filename  = parts[-1]
-    logging.info(f"Trigger: {myblob.name}  →  staging-zone-test/{blob_path}")
+    logging.info(f"Trigger: {myblob.name}  →  staging-zone/{blob_path}")
 
     try:
         content = myblob.read()
@@ -435,14 +435,13 @@ def standardize_blob(myblob: func.InputStream):
         # Step 4 — CocoIndex op: serialize to CSV (no pandas)
         csv_bytes = RowsToCsv(clean_rows)
 
-        # Step 4 — Upload to staging-zone-test
+        # Step 4 — Upload to staging-zone
         conn_str = os.environ["MyStorageConn"]
         BlobServiceClient.from_connection_string(conn_str) \
-            .get_blob_client("staging-zone-test", blob_path) \
+            .get_blob_client("staging-zone", blob_path) \
             .upload_blob(csv_bytes, overwrite=True)
 
-        logging.info(f"Uploaded {len(clean_rows)} rows to staging-zone-test/{blob_path}")
+        logging.info(f"Uploaded {len(clean_rows)} rows to staging-zone/{blob_path}")
 
     except Exception as e:
     logging.error(f"Failed [{blob_path}]: {e}")
-        logging.error(f"Failed [{blob_path}]: {e}")
