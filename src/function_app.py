@@ -4,6 +4,8 @@ import csv
 import io
 import re
 import os
+import json
+import time
 import logging
 from datetime import datetime, timedelta
 from typing import List, Dict, Any
@@ -16,8 +18,10 @@ app = func.FunctionApp()
 # Domain mapping: raw-zone first subfolder → parent label in staging-zone
 # ---------------------------------------------------------------------------
 DOMAIN_MAP = {
-    'carinsurance': 'car-insurance',
+    'carinsurance':  'car-insurance',
     'Car-insurance': 'car-insurance',
+    'Car-Insurance': 'car-insurance',
+    'car-insurance': 'car-insurance',
     'Real-Estate':   'real-estate',
 }
 
@@ -396,6 +400,35 @@ def RowsToCsv(rows: List[Dict[str, Any]]) -> bytes:
 
 
 # ===========================================================================
+# CocoIndex Operator 11 — Generate metadata JSON summary for each processed file
+# ===========================================================================
+@op.function()
+def GenerateMetadata(
+    source_file: str,
+    total_input_rows: int,
+    total_output_rows: int,
+    rows_dropped: int,
+    rare_activities_grouped: int,
+    activity_counts: Dict[str, int],
+    processing_time_seconds: float,
+    processed_at: str,
+) -> bytes:
+    """Produce a JSON summary of the pipeline run for observability."""
+    metadata = {
+        "source_file":              source_file,
+        "processed_at":             processed_at,
+        "processing_time_seconds":  round(processing_time_seconds, 2),
+        "total_input_rows":         total_input_rows,
+        "total_output_rows":        total_output_rows,
+        "rows_dropped":             rows_dropped,
+        "rare_activities_grouped":  rare_activities_grouped,
+        "activity_summary":         activity_counts,
+    }
+    logging.info(f"GenerateMetadata: {total_output_rows} rows, {len(activity_counts)} distinct activities.")
+    return json.dumps(metadata, indent=2).encode("utf-8")
+
+
+# ===========================================================================
 # Azure Blob Trigger — orchestrates all CocoIndex operators
 # ===========================================================================
 @app.blob_trigger(arg_name="myblob", path="raw-zone/{name}", connection="MyStorageConn")
@@ -411,15 +444,18 @@ def standardize_blob(myblob: func.InputStream):
     logging.info(f"Trigger: {myblob.name}  →  staging-zone/{blob_path}")
 
     try:
-        content = myblob.read()
+        start_time   = time.time()
+        processed_at = datetime.utcnow().isoformat(sep=' ', timespec='seconds') + ' UTC'
+        content      = myblob.read()
 
-        # Step 1 — CocoIndex op: parse file → row dicts (no pandas)
+        # Step 1 — CocoIndex op: parse file → row dicts
         rows = ParseFile(content, filename)
         if not rows:
             logging.warning("No rows parsed — skipping.")
             return
+        total_input_rows = len(rows)
 
-        # Step 2 — CocoIndex op: standardize + AI activity derivation (no pandas)
+        # Step 2 — CocoIndex op: standardize + AI activity derivation
         clean_rows = StandardizeRows(rows)
         if not clean_rows:
             logging.warning("No rows after standardization — skipping.")
@@ -429,19 +465,47 @@ def standardize_blob(myblob: func.InputStream):
         clean_rows = CapFutureDates(clean_rows)
         clean_rows = ClampNumericBoundaries(clean_rows)
         clean_rows = NormalizeText(clean_rows)
+
         clean_rows = GroupRareActivities(clean_rows)
+        rare_activities_grouped = sum(
+            1 for r in clean_rows if r.get('activity') == 'OTHER_MINOR_ACTIVITY'
+        )
+
         clean_rows = SortEvents(clean_rows)
 
-        # Step 4 — CocoIndex op: serialize to CSV (no pandas)
+        # Step 4 — CocoIndex op: serialize to CSV
         csv_bytes = RowsToCsv(clean_rows)
 
-        # Step 4 — Upload to staging-zone
-        conn_str = os.environ["MyStorageConn"]
-        BlobServiceClient.from_connection_string(conn_str) \
-            .get_blob_client("staging-zone", blob_path) \
+        # Step 5 — CocoIndex op: generate metadata JSON
+        activity_counts = {}
+        for r in clean_rows:
+            act = str(r.get('activity', 'UNKNOWN'))
+            activity_counts[act] = activity_counts.get(act, 0) + 1
+
+        processing_time = time.time() - start_time
+        metadata_bytes  = GenerateMetadata(
+            source_file             = myblob.name,
+            total_input_rows        = total_input_rows,
+            total_output_rows       = len(clean_rows),
+            rows_dropped            = total_input_rows - len(clean_rows),
+            rare_activities_grouped = rare_activities_grouped,
+            activity_counts         = activity_counts,
+            processing_time_seconds = processing_time,
+            processed_at            = processed_at,
+        )
+
+        # Step 6 — Upload CSV + metadata to staging-zone
+        conn_str   = os.environ["MyStorageConn"]
+        blob_svc   = BlobServiceClient.from_connection_string(conn_str)
+        meta_path  = blob_path.rsplit('.', 1)[0] + '_metadata.json'
+
+        blob_svc.get_blob_client("staging-zone", blob_path) \
             .upload_blob(csv_bytes, overwrite=True)
+        blob_svc.get_blob_client("staging-zone", meta_path) \
+            .upload_blob(metadata_bytes, overwrite=True)
 
         logging.info(f"Uploaded {len(clean_rows)} rows to staging-zone/{blob_path}")
+        logging.info(f"Uploaded metadata to staging-zone/{meta_path}")
 
     except Exception as e:
-    logging.error(f"Failed [{blob_path}]: {e}")
+        logging.error(f"Failed [{blob_path}]: {e}")
