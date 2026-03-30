@@ -384,7 +384,114 @@ def NormalizeText(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 # ===========================================================================
-# CocoIndex Operator 10 — Serialize rows to CSV bytes
+# CocoIndex Operator 10 — Infer Schema from raw parsed rows
+# ===========================================================================
+@op.function()
+def InferSchema(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Automatically detect column mappings, data types, confidence scores
+    and unmatched columns from raw parsed rows."""
+
+    if not rows:
+        return {
+            "inferred_mappings":  {},
+            "column_types":       {},
+            "unmatched_columns":  [],
+            "warnings":           ["No rows to infer schema from."],
+        }
+
+    # Collect all column names from first 10 rows (handles sparse data)
+    all_cols = set()
+    for row in rows[:10]:
+        all_cols.update(row.keys())
+    all_cols = list(all_cols)
+
+    # --- Detect data type for each column ---
+    def _detect_type(values):
+        non_null = [str(v).strip() for v in values if str(v).strip() not in ('', 'nan', 'None')]
+        if not non_null:
+            return 'unknown'
+        # datetime check
+        datetime_hits = 0
+        for v in non_null[:10]:
+            try:
+                from dateutil import parser as dp
+                dp.parse(v)
+                datetime_hits += 1
+            except Exception:
+                pass
+        if datetime_hits >= len(non_null[:10]) * 0.7:
+            return 'datetime'
+        # numeric check
+        numeric_hits = sum(1 for v in non_null[:10] if re.match(r'^-?\d+(\.\d+)?$', v))
+        if numeric_hits >= len(non_null[:10]) * 0.7:
+            return 'numeric'
+        return 'string'
+
+    column_types = {}
+    for col in all_cols:
+        values = [row.get(col) for row in rows[:20]]
+        column_types[col] = _detect_type(values)
+
+    # --- Infer pillar mappings with confidence ---
+    PILLAR_ALIASES = {
+        'case_id':   ID_ALIASES,
+        'activity':  ACT_ALIASES,
+        'timestamp': TS_ALIASES,
+        'resource':  RES_ALIASES,
+    }
+
+    inferred_mappings = {}
+    mapped_cols = set()
+
+    for pillar, aliases in PILLAR_ALIASES.items():
+        matched_col  = None
+        confidence   = 'Low'
+        for i, alias in enumerate(aliases):
+            if alias in all_cols:
+                matched_col = alias
+                # First alias = exact known match → High
+                # Within first 3 = Medium, rest = Low
+                confidence = 'High' if i == 0 else ('Medium' if i < 3 else 'Low')
+                break
+        if matched_col:
+            inferred_mappings[pillar] = {
+                'source_column': matched_col,
+                'confidence':    confidence,
+            }
+            mapped_cols.add(matched_col)
+        else:
+            inferred_mappings[pillar] = {
+                'source_column': None,
+                'confidence':    'None',
+            }
+
+    # --- Unmatched columns ---
+    unmatched = [c for c in all_cols if c not in mapped_cols]
+
+    # --- Warnings ---
+    warnings = []
+    for pillar, info in inferred_mappings.items():
+        if info['source_column'] is None:
+            warnings.append(f"No column found for pillar '{pillar}' — will default to UNKNOWN.")
+        elif info['confidence'] == 'Low':
+            warnings.append(f"'{pillar}' mapped to '{info['source_column']}' with Low confidence.")
+        elif pillar == 'activity' and info['source_column'] in ('remarks', 'user_log'):
+            warnings.append("activity mapping is Low confidence — AI derivation recommended.")
+
+    schema = {
+        "inferred_mappings": inferred_mappings,
+        "column_types":      column_types,
+        "unmatched_columns": unmatched,
+        "warnings":          warnings,
+    }
+
+    logging.info(f"InferSchema: mapped {len([v for v in inferred_mappings.values() if v['source_column']])} of 4 pillars. "
+                 f"Unmatched cols: {unmatched}. Warnings: {len(warnings)}")
+    return schema
+
+
+# ===========================================================================
+# CocoIndex Operator 11 — Serialize rows to CSV bytes
 # ===========================================================================
 @op.function()
 def RowsToCsv(rows: List[Dict[str, Any]]) -> bytes:
@@ -400,7 +507,7 @@ def RowsToCsv(rows: List[Dict[str, Any]]) -> bytes:
 
 
 # ===========================================================================
-# CocoIndex Operator 11 — Generate metadata JSON summary for each processed file
+# CocoIndex Operator 12 — Generate metadata JSON summary for each processed file
 # ===========================================================================
 @op.function()
 def GenerateMetadata(
@@ -412,6 +519,7 @@ def GenerateMetadata(
     activity_counts: Dict[str, int],
     processing_time_seconds: float,
     processed_at: str,
+    schema_report: Dict[str, Any],
 ) -> bytes:
     """Produce a JSON summary of the pipeline run for observability."""
     metadata = {
@@ -423,6 +531,7 @@ def GenerateMetadata(
         "rows_dropped":             rows_dropped,
         "rare_activities_grouped":  rare_activities_grouped,
         "activity_summary":         activity_counts,
+        "schema_report":            schema_report,
     }
     logging.info(f"GenerateMetadata: {total_output_rows} rows, {len(activity_counts)} distinct activities.")
     return json.dumps(metadata, indent=2).encode("utf-8")
@@ -454,6 +563,9 @@ def standardize_blob(myblob: func.InputStream):
             logging.warning("No rows parsed — skipping.")
             return
         total_input_rows = len(rows)
+
+        # Step 1b — CocoIndex op: infer schema from raw rows (before standardization)
+        schema_report = InferSchema(rows)
 
         # Step 2 — CocoIndex op: standardize + AI activity derivation
         clean_rows = StandardizeRows(rows)
@@ -492,6 +604,7 @@ def standardize_blob(myblob: func.InputStream):
             activity_counts         = activity_counts,
             processing_time_seconds = processing_time,
             processed_at            = processed_at,
+            schema_report           = schema_report,
         )
 
         # Step 6 — Upload CSV + metadata to staging-zone
